@@ -495,7 +495,7 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- permisos y GPS
 
-    private fun granted(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+    private fun granted(p: String) = android.os.Build.VERSION.SDK_INT < 23 || checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
     private fun requestPerms() {
         val need = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.RECORD_AUDIO)
