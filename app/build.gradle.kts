@@ -9,8 +9,8 @@ android {
 
     defaultConfig {
         applicationId = "com.sx4.launcher"
-        minSdk = 21
-        targetSdk = 34
+        minSdk = 23
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0"
     }
