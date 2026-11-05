@@ -3,9 +3,11 @@ package com.sx4.launcher
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -26,6 +28,10 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.SpannableString
+import android.text.Spanned
+import android.text.TextUtils
+import android.text.style.RelativeSizeSpan
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.KeyEvent
@@ -73,8 +79,38 @@ class MainActivity : Activity() {
     private var lastFix = 0L
     private var gpsOn = false
 
-    private val timeFmt = SimpleDateFormat("HH:mm", Locale("es", "MX"))
     private val dateFmt = SimpleDateFormat("EEEE d 'de' MMMM", Locale("es", "MX"))
+
+    private val metaActions = arrayOf(
+        "com.android.music.metachanged",
+        "com.android.music.metadatachanged",
+        "com.android.music.playstatechanged",
+        "com.android.music.queuechanged",
+        "com.android.music.playbackcomplete",
+        "com.htc.music.metachanged",
+        "com.miui.player.metachanged",
+        "com.sec.android.app.music.metachanged",
+        "com.sonyericsson.music.metachanged",
+        "com.spotify.music.metadatachanged",
+        "com.maxmpz.audioplayer.metachanged",
+        "fm.last.android.metachanged"
+    )
+
+    private val metaReceiver = object : BroadcastReceiver() {
+        override fun onReceive(c: Context?, i: Intent?) {
+            if (i == null) return
+            MusicBridge.bAction = i.action
+            val t = i.getStringExtra("track") ?: i.getStringExtra("title")
+            if (!t.isNullOrBlank()) {
+                MusicBridge.bTitle = t
+                MusicBridge.bArtist = i.getStringExtra("artist")
+            }
+            val ex = i.extras
+            if (ex != null && ex.containsKey("playing")) {
+                MusicBridge.bPlaying = ex.getBoolean("playing")
+            }
+        }
+    }
 
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
@@ -91,9 +127,7 @@ class MainActivity : Activity() {
 
     private val ticker = object : Runnable {
         override fun run() {
-            val now = Date()
-            tvTime.text = timeFmt.format(now)
-            tvDate.text = dateFmt.format(now).replaceFirstChar { it.uppercase() }
+            updateClock()
             pollMedia()
             applyNight()
             if (gpsOn && System.currentTimeMillis() - lastFix > 5000L) {
@@ -112,7 +146,7 @@ class MainActivity : Activity() {
         Ui.s = minOf(dm.widthPixels / 1280f, dm.heightPixels / 720f)
         modeSetting = prefs.getInt("mode", 0)
         buildUi()
-        car.autoRotate = prefs.getBoolean("rot", false)
+        car.running = prefs.getBoolean("anim", true)
         updateButtons()
         requestPerms()
         gauge.intro()
@@ -122,6 +156,12 @@ class MainActivity : Activity() {
         super.onResume()
         startGps()
         startVisualizer()
+        try {
+            val f = IntentFilter()
+            for (a in metaActions) f.addAction(a)
+            registerReceiver(metaReceiver, f)
+        } catch (e: Exception) {
+        }
         h.removeCallbacks(ticker)
         h.post(ticker)
     }
@@ -129,6 +169,10 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         h.removeCallbacks(ticker)
+        try {
+            unregisterReceiver(metaReceiver)
+        } catch (e: Exception) {
+        }
         stopGps()
         stopVisualizer()
     }
@@ -152,11 +196,11 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- interfaz
 
-    private fun glass(radius: Int = 24, fill: Int = 0x30FFFFFF): GradientDrawable {
+    private fun glass(radius: Int = 24, fill: Int = 0x55061018): GradientDrawable {
         val g = GradientDrawable()
         g.setColor(fill)
         g.cornerRadius = px(radius.toFloat())
-        g.setStroke(pxi(1), 0x33FFFFFF)
+        g.setStroke(pxi(1), 0x44FFFFFF)
         return g
     }
 
@@ -169,10 +213,10 @@ class MainActivity : Activity() {
         return v
     }
 
-    private fun btn(label: String, size: Float = 22f, onClick: () -> Unit): TextView {
+    private fun btn(label: String, size: Float = 22f, fill: Int = 0x66000000, onClick: () -> Unit): TextView {
         val b = tv(label, size)
         b.gravity = Gravity.CENTER
-        b.background = glass(20)
+        b.background = glass(20, fill)
         b.setPadding(pxi(10), pxi(8), pxi(10), pxi(8))
         b.setOnClickListener {
             b.animate().scaleX(0.94f).scaleY(0.94f).setDuration(70).withEndAction {
@@ -185,6 +229,11 @@ class MainActivity : Activity() {
 
     private fun buildUi() {
         root = FrameLayout(this)
+
+        // ---- fondo: el coche (pantalla completa)
+        car = CarView(this)
+        root.addView(car, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
         val main = LinearLayout(this)
         main.orientation = LinearLayout.VERTICAL
         main.setPadding(pxi(24), pxi(16), pxi(24), pxi(16))
@@ -192,43 +241,39 @@ class MainActivity : Activity() {
         val top = LinearLayout(this)
         top.orientation = LinearLayout.HORIZONTAL
 
-        // ---- panel izquierdo: marca, hora, tacometro
+        // ---- panel izquierdo flotante: marca, hora, tacometro
         val left = LinearLayout(this)
         left.orientation = LinearLayout.VERTICAL
         left.gravity = Gravity.CENTER_HORIZONTAL
         left.background = glass(28)
-        left.setPadding(pxi(14), pxi(12), pxi(14), pxi(12))
+        left.setPadding(pxi(12), pxi(12), pxi(12), pxi(12))
 
         val brand = LinearLayout(this)
         brand.orientation = LinearLayout.HORIZONTAL
         brand.gravity = Gravity.CENTER_VERTICAL
         val logo = ImageView(this)
         logo.setImageResource(R.drawable.logo_suzuki)
-        brand.addView(logo, LinearLayout.LayoutParams(pxi(46), pxi(46)))
-        val brandTxt = tv("  SX4", 28f, 0xFFE6ECF2.toInt(), true)
-        brand.addView(brandTxt)
+        brand.addView(logo, LinearLayout.LayoutParams(pxi(44), pxi(44)))
+        brand.addView(tv("  SX4", 28f, 0xFFE6ECF2.toInt(), true))
         left.addView(brand)
 
-        tvTime = tv("--:--", 70f, Color.WHITE, true)
+        tvTime = tv("--:--", 64f, Color.WHITE, true)
         tvTime.gravity = Gravity.CENTER
         left.addView(tvTime)
-        tvDate = tv("", 19f, 0xAAFFFFFF.toInt())
+        tvDate = tv("", 18f, 0xCCFFFFFF.toInt())
         tvDate.gravity = Gravity.CENTER
         left.addView(tvDate)
 
         gauge = GaugeView(this)
         val glp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f)
-        glp.topMargin = pxi(8)
+        glp.topMargin = pxi(6)
         left.addView(gauge, glp)
-        top.addView(left, LinearLayout.LayoutParams(pxi(320), ViewGroup.LayoutParams.MATCH_PARENT))
+        top.addView(left, LinearLayout.LayoutParams(pxi(300), ViewGroup.LayoutParams.MATCH_PARENT))
 
-        // ---- centro: coche 360
-        car = CarView(this)
-        val clp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f)
-        clp.setMargins(pxi(16), 0, pxi(16), 0)
-        top.addView(car, clp)
+        // ---- centro libre (se ve el coche)
+        top.addView(View(this), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
 
-        // ---- panel derecho: musica
+        // ---- panel derecho flotante: musica
         val right = LinearLayout(this)
         right.orientation = LinearLayout.VERTICAL
         right.background = glass(28)
@@ -246,15 +291,15 @@ class MainActivity : Activity() {
                 outline.setRoundRect(0, 0, view.width, view.height, px(16f))
             }
         }
-        info.addView(cover, LinearLayout.LayoutParams(pxi(96), pxi(96)))
+        info.addView(cover, LinearLayout.LayoutParams(pxi(90), pxi(90)))
         val txtCol = LinearLayout(this)
         txtCol.orientation = LinearLayout.VERTICAL
-        tvTitle = tv("Sin musica", 24f, Color.WHITE, true)
+        tvTitle = tv("Sin musica", 23f, Color.WHITE, true)
         tvTitle.maxLines = 2
-        tvTitle.ellipsize = android.text.TextUtils.TruncateAt.END
-        tvArtist = tv("", 18f, 0xBBFFFFFF.toInt())
+        tvTitle.ellipsize = TextUtils.TruncateAt.END
+        tvArtist = tv("", 17f, 0xDDFFFFFF.toInt())
         tvArtist.maxLines = 1
-        tvArtist.ellipsize = android.text.TextUtils.TruncateAt.END
+        tvArtist.ellipsize = TextUtils.TruncateAt.END
         txtCol.addView(tvTitle)
         txtCol.addView(tvArtist)
         val tlp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
@@ -262,33 +307,34 @@ class MainActivity : Activity() {
         info.addView(txtCol, tlp)
         right.addView(info)
 
-        tvStatus = tv("", 14f, 0x99FFFFFF.toInt())
+        tvStatus = tv("", 13f, 0xAAFFFFFF.toInt())
+        tvStatus.maxLines = 2
         tvStatus.setPadding(0, pxi(8), 0, pxi(8))
         right.addView(tvStatus)
 
         eq = EqView(this)
-        eq.onBass = { b -> h.post { car.scaleX = 1f + 0.02f * b; car.scaleY = 1f + 0.02f * b } }
+        eq.onBass = { b -> h.post { car.scaleX = 1f + 0.015f * b; car.scaleY = 1f + 0.015f * b } }
         right.addView(eq, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        tvEq = tv("", 13f, 0x88FFFFFF.toInt())
+        tvEq = tv("", 12f, 0x99FFFFFF.toInt())
         tvEq.setPadding(0, pxi(6), 0, pxi(8))
         right.addView(tvEq)
 
         val ctl = LinearLayout(this)
         ctl.orientation = LinearLayout.HORIZONTAL
-        val bPrev = btn("\u23EE", 30f) { media(KeyEvent.KEYCODE_MEDIA_PREVIOUS) }
-        btnPlay = btn("\u23EF", 30f) { media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
-        val bNext = btn("\u23ED", 30f) { media(KeyEvent.KEYCODE_MEDIA_NEXT) }
+        val bPrev = btn("\u23EE", 30f, 0x33FFFFFF) { media(KeyEvent.KEYCODE_MEDIA_PREVIOUS) }
+        btnPlay = btn("\u23EF", 30f, 0x33FFFFFF) { media(KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }
+        val bNext = btn("\u23ED", 30f, 0x33FFFFFF) { media(KeyEvent.KEYCODE_MEDIA_NEXT) }
         for (b in listOf(bPrev, btnPlay, bNext)) {
-            val lp = LinearLayout.LayoutParams(0, pxi(70), 1f)
+            val lp = LinearLayout.LayoutParams(0, pxi(66), 1f)
             lp.setMargins(pxi(4), 0, pxi(4), 0)
             ctl.addView(b, lp)
         }
         right.addView(ctl)
-        top.addView(right, LinearLayout.LayoutParams(pxi(340), ViewGroup.LayoutParams.MATCH_PARENT))
+        top.addView(right, LinearLayout.LayoutParams(pxi(310), ViewGroup.LayoutParams.MATCH_PARENT))
 
         main.addView(top, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
-        // ---- dock inferior
+        // ---- dock inferior flotante
         val dock = LinearLayout(this)
         dock.orientation = LinearLayout.HORIZONTAL
         val bMaps = btn("\uD83D\uDDFA  Mapas") { openMaps() }
@@ -303,8 +349,8 @@ class MainActivity : Activity() {
             updateButtons()
         }
         btnRot = btn("") {
-            car.autoRotate = !car.autoRotate
-            prefs.edit().putBoolean("rot", car.autoRotate).apply()
+            car.running = !car.running
+            prefs.edit().putBoolean("anim", car.running).apply()
             updateButtons()
         }
         for (b in listOf(bMaps, bMusic, bApps, bSet, btnMode, btnRot)) {
@@ -312,8 +358,8 @@ class MainActivity : Activity() {
             lp.setMargins(pxi(6), 0, pxi(6), 0)
             dock.addView(b, lp)
         }
-        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, pxi(84))
-        dlp.topMargin = pxi(14)
+        val dlp = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, pxi(80))
+        dlp.topMargin = pxi(12)
         main.addView(dock, dlp)
 
         root.addView(main, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
@@ -321,12 +367,28 @@ class MainActivity : Activity() {
         applyNight()
 
         // animacion de entrada
-        val panels = listOf<View>(left, car, right, dock)
+        car.alpha = 0f
+        car.animate().alpha(1f).setDuration(900).start()
+        val panels = listOf<View>(left, right, dock)
         for ((i, v) in panels.withIndex()) {
             v.alpha = 0f
             v.translationY = px(40f)
-            v.animate().alpha(1f).translationY(0f).setStartDelay(i * 120L).setDuration(600).start()
+            v.animate().alpha(1f).translationY(0f).setStartDelay(150L + i * 120L).setDuration(600).start()
         }
+    }
+
+    private fun updateClock() {
+        val cal = Calendar.getInstance()
+        var hr = cal.get(Calendar.HOUR)
+        if (hr == 0) hr = 12
+        val mm = cal.get(Calendar.MINUTE)
+        val ap = if (cal.get(Calendar.AM_PM) == Calendar.AM) "AM" else "PM"
+        val base = hr.toString() + ":" + (if (mm < 10) "0" else "") + mm.toString()
+        val full = base + " " + ap
+        val sp = SpannableString(full)
+        sp.setSpan(RelativeSizeSpan(0.40f), base.length, full.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        tvTime.text = sp
+        tvDate.text = dateFmt.format(Date()).replaceFirstChar { it.uppercase() }
     }
 
     private fun updateButtons() {
@@ -335,7 +397,7 @@ class MainActivity : Activity() {
             2 -> "\uD83C\uDF19  Noche"
             else -> "\uD83C\uDF13  Auto"
         }
-        btnRot.text = if (car.autoRotate) "\u21BB  Giro: SI" else "\u21BB  Giro: NO"
+        btnRot.text = if (car.running) "\u25B6  Animacion: SI" else "\u23F8  Animacion: NO"
     }
 
     private fun applyNight() {
@@ -429,7 +491,7 @@ class MainActivity : Activity() {
             cell.compoundDrawablePadding = pxi(6)
             cell.gravity = Gravity.CENTER_HORIZONTAL
             cell.maxLines = 2
-            cell.ellipsize = android.text.TextUtils.TruncateAt.END
+            cell.ellipsize = TextUtils.TruncateAt.END
             cell.setPadding(pxi(4), pxi(10), pxi(4), pxi(4))
             val pkg = ri.activityInfo.packageName
             cell.setOnClickListener {
@@ -473,6 +535,7 @@ class MainActivity : Activity() {
             "Elegir app de Musica Bluetooth",
             "Dar permisos (ubicacion y audio)",
             "Acceso a notificaciones (nombre de la cancion)",
+            "Diagnostico de musica (toma captura y mandamela)",
             "Pantalla de inicio predeterminada",
             "Ajustes de Android",
             "Reiniciar ecualizador"
@@ -484,18 +547,50 @@ class MainActivity : Activity() {
                     0 -> showApps(true)
                     1 -> requestPerms()
                     2 -> tryStart(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-                    3 -> tryStart(Intent(Settings.ACTION_HOME_SETTINGS))
-                    4 -> tryStart(Intent(Settings.ACTION_SETTINGS))
-                    5 -> { stopVisualizer(); startVisualizer() }
+                    3 -> showDiag()
+                    4 -> tryStart(Intent(Settings.ACTION_HOME_SETTINGS))
+                    5 -> tryStart(Intent(Settings.ACTION_SETTINGS))
+                    6 -> { stopVisualizer(); startVisualizer() }
                 }
             }
             .setNegativeButton("Cerrar", null)
             .show()
     }
 
+    private fun showDiag() {
+        val sb = StringBuilder()
+        sb.append("App de musica elegida: ").append(prefs.getString("music_pkg", "(ninguna)")).append("\n\n")
+        sb.append("1) Sesiones multimedia:\n")
+        try {
+            val msm = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val list = msm.getActiveSessions(ComponentName(this, MusicListener::class.java))
+            if (list.isEmpty()) sb.append("   ninguna\n")
+            for (c in list) {
+                sb.append("   ").append(c.packageName).append(" | ")
+                    .append(c.metadata?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: "(sin titulo)").append("\n")
+            }
+        } catch (e: SecurityException) {
+            sb.append("   SIN ACCESO A NOTIFICACIONES (activalo en Ajustes)\n")
+        } catch (e: Exception) {
+            sb.append("   error: ").append(e.message).append("\n")
+        }
+        sb.append("\n2) Notificaciones recientes (app | titulo | texto):\n")
+        synchronized(MusicBridge.recent) {
+            if (MusicBridge.recent.isEmpty()) sb.append("   ninguna\n")
+            for ((k, v) in MusicBridge.recent) sb.append("   ").append(k).append(" | ").append(v).append("\n")
+        }
+        sb.append("\n3) Transmision de musica: ").append(MusicBridge.bAction ?: "ninguna recibida")
+        sb.append("\n\nTip: pon una cancion, espera 5 segundos y vuelve a abrir este diagnostico.")
+        AlertDialog.Builder(this)
+            .setTitle("Diagnostico de musica")
+            .setMessage(sb.toString())
+            .setPositiveButton("Cerrar", null)
+            .show()
+    }
+
     // ---------------------------------------------------------------- permisos y GPS
 
-    private fun granted(p: String) = android.os.Build.VERSION.SDK_INT < 23 || checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
+    private fun granted(p: String) = checkSelfPermission(p) == PackageManager.PERMISSION_GRANTED
 
     private fun requestPerms() {
         val need = arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.RECORD_AUDIO)
@@ -532,34 +627,72 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- musica
 
     private fun pollMedia() {
-        val msm = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        val list: List<MediaController> = try {
-            msm.getActiveSessions(ComponentName(this, MusicListener::class.java))
+        var title: String? = null
+        var artist = ""
+        var art: Bitmap? = null
+        var isPlaying = false
+        var src = ""
+        var access = true
+        var sessionPlaying: Boolean? = null
+
+        // Ruta 1: sesion multimedia (la mejor, si la app la publica)
+        try {
+            val msm = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+            val list: List<MediaController> =
+                msm.getActiveSessions(ComponentName(this, MusicListener::class.java))
+            val c = list.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING } ?: list.firstOrNull()
+            controller = c
+            if (c != null) {
+                val md = c.metadata
+                title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
+                artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
+                    ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
+                art = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                    ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                sessionPlaying = c.playbackState?.state == PlaybackState.STATE_PLAYING
+                src = "sesion"
+            }
         } catch (e: SecurityException) {
             controller = null
-            showTrack("Activa el acceso", "Ajustes > Acceso a notificaciones", null, false,
-                "Falta permiso para leer la cancion")
-            return
+            access = false
         } catch (e: Exception) {
             controller = null
-            return
         }
-        val c = list.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING } ?: list.firstOrNull()
-        controller = c
-        if (c == null) {
-            showTrack("Sin musica", "", null, false,
-                "No hay reproduccion detectada. Algunas apps no comparten el titulo.")
-            return
+
+        // Ruta 2: notificacion de la app de musica
+        if (title.isNullOrBlank()) {
+            val nt = MusicBridge.nTitle
+            if (!nt.isNullOrBlank()) {
+                title = nt
+                artist = MusicBridge.nText ?: ""
+                art = MusicBridge.nArt
+                src = "notificacion"
+            }
         }
-        val md = c.metadata
-        val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE)
-        val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST)
-            ?: md?.getString(MediaMetadata.METADATA_KEY_ALBUM_ARTIST) ?: ""
-        val art: Bitmap? = md?.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
-            ?: md?.getBitmap(MediaMetadata.METADATA_KEY_ART)
-        val isPlaying = c.playbackState?.state == PlaybackState.STATE_PLAYING
-        showTrack(title ?: "Sin informacion de la cancion", artist, art, isPlaying,
-            (if (isPlaying) "Reproduciendo" else "En pausa") + "  -  " + c.packageName)
+
+        // Ruta 3: transmisiones (broadcast) de la app
+        if (title.isNullOrBlank()) {
+            val bt = MusicBridge.bTitle
+            if (!bt.isNullOrBlank()) {
+                title = bt
+                artist = MusicBridge.bArtist ?: ""
+                src = "transmision"
+            }
+        }
+
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        isPlaying = sessionPlaying ?: (MusicBridge.bPlaying ?: am.isMusicActive)
+
+        if (title.isNullOrBlank()) {
+            val msg = if (!access)
+                "Falta activar 'Acceso a notificaciones' (Ajustes) para leer la cancion"
+            else
+                "Esta app no comparte el nombre de la cancion. Revisa Ajustes > Diagnostico."
+            showTrack(if (isPlaying) "Reproduciendo audio" else "Sin musica", "", null, isPlaying, msg)
+        } else {
+            showTrack(title, artist, art, isPlaying,
+                (if (isPlaying) "Reproduciendo" else "En pausa") + "  -  fuente: " + src)
+        }
     }
 
     private fun showTrack(title: String, artist: String, art: Bitmap?, isPlaying: Boolean, status: String) {
